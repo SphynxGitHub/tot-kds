@@ -1,0 +1,27 @@
+import { freshDb } from './db.mjs';
+const db = await freshDb();
+await db.exec(`insert into locations(name, organizer_email) values ('Org Stop','org@x.com'), ('No Email','')`);
+await db.exec(`insert into events(location_id,event_date,start_time,end_time)
+  select id, current_date + 20, '11:00','15:00' from locations where name='Org Stop'`);
+const jobs = (await db.query(`select kind, payload->>'days_before' d, run_at from scheduled_jobs order by run_at`)).rows;
+const kinds = jobs.map((j) => j.kind + (j.d ? ':' + j.d : ''));
+console.log(kinds);
+const ev = (await db.query(`select ordering_opens_at, event_date from events`)).rows[0];
+let fail = 0; const ok = (n, c) => { console.log(c ? 'OK  ' : 'FAIL', n); if (!c) fail++; };
+ok('invite queued now', kinds.includes('organizer_invite'));
+ok('1 week + 1 day reminders', kinds.includes('organizer_reminder:7') && kinds.includes('organizer_reminder:1'));
+ok('open/close ordering queued', kinds.includes('open_ordering') && kinds.includes('close_ordering'));
+const gap = (await db.query(`select (event_date - (ordering_opens_at at time zone 'America/New_York')::date) g from events`)).rows[0].g;
+ok('ordering opens 6 days before', gap === 6);
+await db.exec(`update events set event_date = event_date + 1`);
+const pending = (await db.query(`select kind from scheduled_jobs where status='pending'`)).rows.map((r) => r.kind);
+ok('date change sends update and replans', pending.includes('organizer_update') && !pending.includes('organizer_invite'));
+await db.exec(`update events set status='cancelled'`);
+const p2 = (await db.query(`select kind from scheduled_jobs where status='pending'`)).rows.map((r) => r.kind);
+ok('cancel sends cancel only', p2.length === 1 && p2[0] === 'organizer_cancel');
+await db.exec(`insert into events(location_id,event_date) select id, current_date+5 from locations where name='No Email'`);
+ok('no organizer email: no organizer jobs', (await db.query(`select 1 from scheduled_jobs j join events e on e.id=j.event_id join locations l on l.id=e.location_id where l.name='No Email' and j.kind like 'organizer%'`)).rows.length === 0);
+await db.exec(`insert into events(location_id,event_date,start_time,end_time) select id, current_date+2,'11:00','15:00' from locations where name='Org Stop'`);
+const soon = (await db.query(`select j.run_at <= now() + interval '1 second' now_ from scheduled_jobs j join events e on e.id=j.event_id where e.event_date=current_date+2 and j.kind='open_ordering'`)).rows;
+ok('booked inside 6-day window opens immediately', soon.length === 1 && soon[0].now_);
+process.exit(fail ? 1 : 0);

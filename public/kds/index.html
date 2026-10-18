@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kitchen Display</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+  :root { --bg:#f3f1ec; --card:#fff; --ink:#1d1b18; --mute:#6b665e; --line:#d9d4c9; --accent:#9c2a1a; --ok:#2f6b3a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16140f; --card:#221f19; --ink:#f1ede4; --mute:#a39d90; --line:#3a352b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; flex:1; }
+  button { font:inherit; min-height:44px; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.tab[aria-pressed="true"] { background:var(--ink); color:var(--bg); }
+  .cols { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; padding:12px; align-items:start; }
+  @media (max-width: 800px) { .cols { grid-template-columns:1fr; } }
+  .col h2 { margin:0 0 8px; font-size:16px; text-align:center; }
+  .card { background:var(--card); border:2px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
+  .card.diet { border-color:#c0392b; } .card.recook { border-color:#d4a017; } .card.diet.recook { border-color:#e67e22; }
+  .name { font-weight:700; font-size:20px; padding-bottom:6px; border-bottom:1px solid var(--line); }
+  .warn { color:#c0392b; font-weight:700; margin-bottom:6px; }
+  .recook-note { color:#b07d00; font-weight:700; }
+  ul { padding-left:18px; margin:8px 0; } li { margin-bottom:6px; font-size:17px; } li em { display:block; color:var(--mute); }
+  .times { display:flex; gap:12px; flex-wrap:wrap; color:var(--mute); font-size:14px; padding:6px 0; border-top:1px solid var(--line); }
+  .row { display:flex; gap:8px; margin-top:8px; } .row > * { flex:1; }
+  input[type=text], input[type=tel], input[type=email], input[type=password] { width:100%; min-height:44px; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; }
+  .login { max-width:360px; margin:12vh auto; padding:16px; } .login input { margin-bottom:10px; }
+  .err { color:#c0392b; margin:8px 0; } .hint { color:var(--mute); font-size:14px; }
+  .empty { color:var(--mute); text-align:center; padding:16px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<audio id="bell" src="bell.mp3" preload="auto"></audio>
+<script>
+const CFG = window.KDS_CONFIG || {};  // set in config.js: { SUPABASE_URL, SUPABASE_ANON_KEY }
+</script>
+<script src="config.js"></script>
+<script>
+const sb = supabase.createClient(window.KDS_CONFIG.SUPABASE_URL, window.KDS_CONFIG.SUPABASE_ANON_KEY);
+const app = document.getElementById('app');
+const TZ = 'America/New_York';
+let view = 'active', orders = [], seen = null, err = '';
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const fmt = (t) => t ? new Date(t).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', timeZone:TZ }) : '';
+const today = () => new Date().toLocaleDateString('en-CA', { timeZone: TZ });
+
+async function boot() {
+  const { data } = await sb.auth.getSession();
+  if (!data.session) return loginScreen();
+  await load();
+  setInterval(load, 5000);
+  sb.channel('orders').on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, load).subscribe();
+}
+
+function loginScreen(msg = '') {
+  app.innerHTML = `<form class="login"><h1>Kitchen Display</h1>
+    <input type="email" id="em" placeholder="Email" autocomplete="username" required>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+    <button class="primary" style="width:100%">Sign in</button><div class="err">${esc(msg)}</div></form>`;
+  app.querySelector('form').onsubmit = async (e) => {
+    e.preventDefault();
+    const { error } = await sb.auth.signInWithPassword({ email: em.value, password: pw.value });
+    error ? loginScreen(error.message) : location.reload();
+  };
+}
+
+async function load() {
+  const start = new Date(today() + 'T00:00:00'); // local midnight; wide enough, filtered below by Eastern date
+  const { data, error } = await sb.from('orders')
+    .select('id,first_name,last_name,phone,dietary_notes,status,received_at,cooking_started_at,cooking_ended_at,picked_up_at,recook_reason,unit_number,order_items(line_no,item_name,variation_name,modifiers,quantity)')
+    .gte('received_at', new Date(Date.now() - 36 * 3600e3).toISOString())
+    .neq('status', 'cancelled').order('received_at', { ascending: false });
+  if (error) { err = error.message; return render(); }
+  err = '';
+  orders = data.filter((o) => new Date(o.received_at).toLocaleDateString('en-CA', { timeZone: TZ }) === today());
+  const ids = new Set(orders.map((o) => o.id));
+  if (seen && [...ids].some((i) => !seen.has(i))) document.getElementById('bell').play().catch(() => {});
+  seen = ids;
+  render();
+}
+
+function card(o) {
+  const items = (o.order_items || []).sort((a, b) => a.line_no - b.line_no).map((i) =>
+    `<li><strong>${i.quantity > 1 ? i.quantity + ' × ' : ''}${esc(i.item_name)} ${esc(i.variation_name || '')}</strong>${i.modifiers ? `<em>${esc(i.modifiers)}</em>` : ''}</li>`).join('');
+  const btns = {
+    new: `<button class="primary" data-a="cooking">Start cooking</button>`,
+    cooking: `<button data-a="new">Back to new</button><button class="primary" data-a="completed">Completed</button>`,
+    completed: `<button data-a="recook">Re-cook</button><button class="primary" data-a="picked_up">Picked up</button>`,
+    picked_up: `<button data-a="recook">Re-cook</button>`,
+  }[o.status] || '';
+  return `<div class="card ${o.dietary_notes ? 'diet' : ''} ${o.recook_reason ? 'recook' : ''}" data-id="${o.id}">
+    ${o.dietary_notes ? `<div class="warn">Dietary: ${esc(o.dietary_notes)}</div>` : ''}
+    <div class="name">${esc(o.first_name)} ${esc(o.last_name)}${o.unit_number ? ' · Unit ' + esc(o.unit_number) : ''}</div>
+    <ul>${items}</ul>
+    ${o.recook_reason ? `<div class="recook-note">Re-cook: ${esc(o.recook_reason)}</div>` : ''}
+    <div class="times"><span>Ordered ${fmt(o.received_at)}</span>${o.cooking_started_at ? `<span>Cooking ${fmt(o.cooking_started_at)}</span>` : ''}${o.cooking_ended_at ? `<span>Done ${fmt(o.cooking_ended_at)}</span>` : ''}${o.picked_up_at ? `<span>Picked up ${fmt(o.picked_up_at)}</span>` : ''}</div>
+    <div class="row"><input type="tel" placeholder="Phone" value="${esc(o.phone || '')}" data-f="phone"><input type="text" placeholder="Dietary note" value="${esc(o.dietary_notes || '')}" data-f="diet"></div>
+    <div class="row"><button data-a="save">Save contact</button><button data-a="text" ${o.phone ? '' : 'disabled'}>Text customer</button></div>
+    <div class="row">${btns}</div></div>`;
+}
+
+function render() {
+  if (document.activeElement && document.activeElement.matches('input')) return; // don't wipe typing
+  const by = (s) => orders.filter((o) => o.status === s);
+  const col = (title, list, asc) => `<div class="col"><h2>${title} (${list.length})</h2>${
+    (asc ? list.sort((a, b) => (b.recook_reason ? 1 : 0) - (a.recook_reason ? 1 : 0) || new Date(a.cooking_started_at) - new Date(b.cooking_started_at))
+         : list.sort((a, b) => new Date(a.received_at) - new Date(b.received_at))).map(card).join('') || '<div class="empty">None</div>'}</div>`;
+  app.innerHTML = `<header><h1>Kitchen Display</h1>
+    <button class="tab" aria-pressed="${view === 'active'}" data-v="active">Active</button>
+    <button class="tab" aria-pressed="${view === 'picked'}" data-v="picked">Picked up</button>
+    <button data-v="out">Sign out</button></header>
+    ${err ? `<div class="err" style="padding:0 14px">${esc(err)}</div>` : ''}
+    <div class="cols">${view === 'active' ? col('New', by('new')) + col('Cooking', by('cooking'), true) + col('Completed', by('completed')) : col('Picked up', by('picked_up').reverse())}</div>`;
+}
+
+app.addEventListener('click', async (e) => {
+  const v = e.target.closest('[data-v]');
+  if (v) { if (v.dataset.v === 'out') { await sb.auth.signOut(); return location.reload(); } view = v.dataset.v; return render(); }
+  const b = e.target.closest('[data-a]'); if (!b) return;
+  const cardEl = b.closest('.card'), id = cardEl.dataset.id, a = b.dataset.a;
+  b.disabled = true;
+  let r;
+  if (a === 'recook') { const why = prompt('Reason for re-cooking this order?'); if (!why) { b.disabled = false; return; } r = await sb.rpc('kds_recook', { p_order: id, p_reason: why }); }
+  else if (a === 'save') {
+    r = await sb.rpc('kds_set_contact', { p_order: id, p_phone: cardEl.querySelector('[data-f=phone]').value, p_dietary: cardEl.querySelector('[data-f=diet]').value });
+    const sug = r.data?.saved_dietary;
+    if (!r.error && sug && !cardEl.querySelector('[data-f=diet]').value) alert('Saved dietary note for this customer: ' + sug);
+  } else if (a === 'text') {
+    const o = orders.find((x) => x.id === id);
+    const msg = prompt('Edit message before sending:', `Hi ${o.first_name}, your order is ready for pickup!`);
+    if (!msg) { b.disabled = false; return; }
+    const { data: s } = await sb.auth.getSession();
+    const resp = await fetch(window.KDS_CONFIG.SUPABASE_URL + '/functions/v1/send-text', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: window.KDS_CONFIG.SUPABASE_ANON_KEY, Authorization: 'Bearer ' + s.session.access_token }, body: JSON.stringify({ orderId: id, message: msg }) });
+    alert(resp.ok ? 'Message sent' : 'Text failed'); b.disabled = false; return;
+  } else r = await sb.rpc('kds_set_status', { p_order: id, p_status: a });
+  if (r.error) alert(r.error.message);
+  document.activeElement?.blur(); await load();
+});
+boot();
+</script>
+</body>
+</html>

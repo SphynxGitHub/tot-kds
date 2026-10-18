@@ -1,0 +1,23 @@
+import { freshDb } from './db.mjs';
+import { runDueJobs } from '../supabase/functions/_shared/jobs.mjs';
+const db = await freshDb();
+let fail = 0; const ok = (n, c) => { console.log(c ? 'OK  ' : 'FAIL', n); if (!c) fail++; };
+await db.exec(`insert into locations(name, square_location_id) values ('A','SQA'), ('B', null)`);
+await db.exec(`insert into events(location_id,event_date,start_time,end_time)
+  select id, current_date + 10, '11:00','15:00' from locations where name='A'`);
+const calls = [];
+const sq = async (m, p, b) => { calls.push({ m, p, b }); return {}; };
+await db.exec(`update scheduled_jobs set run_at = now() - interval '1 minute' where kind='open_ordering'`);
+let r = await runDueJobs(db, sq);
+ok('open sets weekday hours', r.length === 1 && calls[0].p === '/v2/locations/SQA' && calls[0].b.location.business_hours.periods[0].start_local_time === '11:00:00');
+ok('future close job not run', (await db.query(`select 1 from scheduled_jobs where kind='close_ordering' and status='pending'`)).rows.length === 1);
+await db.exec(`update scheduled_jobs set run_at = now() - interval '1 minute' where kind='close_ordering'`);
+calls.length = 0; r = await runDueJobs(db, sq);
+ok('close clears hours', calls.length === 1 && calls[0].b.location.business_hours === null);
+await db.exec(`insert into events(location_id,event_date,start_time,end_time) select id, current_date+8,'11:00','15:00' from locations where name='B'`);
+await db.exec(`update scheduled_jobs set run_at = now() - interval '1 minute' where status='pending'`);
+r = await runDueJobs(db, sq);
+const bad = (await db.query(`select status, last_error from scheduled_jobs where event_id in (select id from events where event_date = current_date+8) and kind='open_ordering'`)).rows[0];
+ok('missing Square ID retries with error', bad.status === 'pending' && /Square location/.test(bad.last_error));
+const fail1 = async () => { throw new Error('boom'); };
+process.exit(fail ? 1 : 0);
