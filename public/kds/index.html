@@ -17,6 +17,9 @@
   button.tab[aria-pressed="true"] { background:var(--ink); color:var(--bg); }
   .cols { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; padding:12px; align-items:start; }
   @media (max-width: 800px) { .cols { grid-template-columns:1fr; } }
+  .grid3 { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; align-items:start; }
+  .grid3 .card { margin-bottom:0; }
+  @media (max-width: 800px) { .grid3 { grid-template-columns:1fr; } }
   .col h2 { margin:0 0 8px; font-size:16px; text-align:center; }
   .card { background:var(--card); border:2px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
   .card.diet { border-color:#c0392b; } .card.recook { border-color:#d4a017; } .card.diet.recook { border-color:#e67e22; }
@@ -177,7 +180,7 @@ function render(force = false) {
     <button data-v="out">Sign out</button></header>
     ${err ? `<div class="err" style="padding:0 14px">${esc(err)}</div>` : ''}
     <div class="cols">${view === 'active' ? col('New', by('new')) + col('Cooking', by('cooking'), true) + col('Completed', by('completed'))
-      : view === 'scheduled' ? `<div class="col" style="grid-column:1/-1"><h2>Scheduled for later (${held.length})</h2>${held.map(card).join('') || '<div class="empty">None</div>'}</div>`
+      : view === 'scheduled' ? `<div style="grid-column:1/-1"><h2 style="text-align:center">Scheduled for later (${held.length})</h2><div class="grid3">${held.map(card).join('') || '<div class="empty">None</div>'}</div></div>`
       : col('Picked up', by('picked_up').reverse())}</div>`;
   tick();
 }
