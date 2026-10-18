@@ -215,7 +215,9 @@ app.addEventListener('click', async (e) => {
     r = await sb.rpc('kds_set_contact', { p_order: id, p_phone: phone, p_dietary: diet });
     const sug = r.data?.saved_dietary;
     if (!r.error) { editing.delete(id); delete drafts[id]; }
-    if (!r.error && sug && dietEl && !diet) alert('Saved dietary note for this customer: ' + sug);
+    if (!r.error && sug && !diet && confirm('This customer has a saved dietary note:\n\n' + sug + '\n\nAdd it to this order?')) {
+      r = await sb.rpc('kds_set_contact', { p_order: id, p_phone: phone, p_dietary: sug });
+    }
   } else if (a === 'text') {
     const o = orders.find((x) => x.id === id);
     const msg = prompt('Edit message before sending:', `Hi ${o.first_name}, your order is ready for pickup!`);
