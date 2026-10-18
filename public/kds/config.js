@@ -1,2 +1,2 @@
 // Copy to config.js and fill in (the anon key is safe to expose; access is enforced by row-level security).
-window.KDS_CONFIG = { SUPABASE_URL: 'https://YOUR-PROJECT.supabase.co', SUPABASE_ANON_KEY: 'YOUR-ANON-KEY' };
+window.KDS_CONFIG = { SUPABASE_URL: 'https://tebwjalfewghidprkzac.supabase.co', SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRlYndqYWxmZXdnaGlkcHJremFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIyNzQxMTUsImV4cCI6MjEwNzg1MDExNX0.OZMlpYjMrCrZxFGHgrqDBzPnPuLyHZKthzCfDYc57U4' };
