@@ -26,6 +26,7 @@
   ul { padding-left:18px; margin:8px 0; } li { margin-bottom:6px; font-size:17px; } li em { display:block; color:var(--mute); }
   .times { display:flex; gap:12px; flex-wrap:wrap; color:var(--mute); font-size:14px; padding:6px 0; border-top:1px solid var(--line); }
   .row { display:flex; gap:8px; margin-top:8px; } .row > * { flex:1; }
+  .row.contact > input { flex:3; } .row.contact > button.small { flex:0 0 auto; min-width:64px; }
   input[type=text], input[type=tel], input[type=email], input[type=password] { width:100%; min-height:44px; padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); font:inherit; }
   .login { max-width:360px; margin:12vh auto; padding:16px; } .login input { margin-bottom:10px; }
   .err { color:#c0392b; margin:8px 0; } .hint { color:var(--mute); font-size:14px; }
@@ -68,19 +69,19 @@ function loginScreen(msg = '') {
   };
 }
 
-async function load() {
+async function load(force = false) {
   const start = new Date(today() + 'T00:00:00'); // local midnight; wide enough, filtered below by Eastern date
   const { data, error } = await sb.from('orders')
     .select('id,first_name,last_name,phone,dietary_notes,status,received_at,cooking_started_at,cooking_ended_at,picked_up_at,recook_reason,unit_number,order_items(line_no,item_name,variation_name,modifiers,quantity)')
     .gte('received_at', new Date(Date.now() - 36 * 3600e3).toISOString())
     .neq('status', 'cancelled').order('received_at', { ascending: false });
-  if (error) { err = error.message; return render(); }
+  if (error) { err = error.message; return render(true); }
   err = '';
   orders = data.filter((o) => new Date(o.received_at).toLocaleDateString('en-CA', { timeZone: TZ }) === today());
   const ids = new Set(orders.map((o) => o.id));
   if (seen && [...ids].some((i) => !seen.has(i))) document.getElementById('bell').play().catch(() => {});
   seen = ids;
-  render();
+  render(force);
 }
 
 function card(o) {
@@ -95,16 +96,16 @@ function card(o) {
   return `<div class="card ${o.dietary_notes ? 'diet' : ''} ${o.recook_reason ? 'recook' : ''}" data-id="${o.id}">
     ${o.dietary_notes ? `<div class="warn">Dietary: ${esc(o.dietary_notes)}</div>` : ''}
     <div class="name">${esc(o.first_name)} ${esc(o.last_name)}${o.unit_number ? ' · Unit ' + esc(o.unit_number) : ''}</div>
+    <div class="row contact"><input type="tel" placeholder="Phone" value="${esc(o.phone || '')}" data-f="phone"><button data-a="save" class="small">Save</button><button data-a="text" class="small" ${o.phone ? '' : 'disabled'}>Text</button></div>
+    <div class="row"><input type="text" placeholder="Dietary note" value="${esc(o.dietary_notes || '')}" data-f="diet"></div>
     <ul>${items}</ul>
     ${o.recook_reason ? `<div class="recook-note">Re-cook: ${esc(o.recook_reason)}</div>` : ''}
     <div class="times"><span>Ordered ${fmt(o.received_at)}</span>${o.cooking_started_at ? `<span>Cooking ${fmt(o.cooking_started_at)}</span>` : ''}${o.cooking_ended_at ? `<span>Done ${fmt(o.cooking_ended_at)}</span>` : ''}${o.picked_up_at ? `<span>Picked up ${fmt(o.picked_up_at)}</span>` : ''}</div>
-    <div class="row"><input type="tel" placeholder="Phone" value="${esc(o.phone || '')}" data-f="phone"><input type="text" placeholder="Dietary note" value="${esc(o.dietary_notes || '')}" data-f="diet"></div>
-    <div class="row"><button data-a="save">Save contact</button><button data-a="text" ${o.phone ? '' : 'disabled'}>Text customer</button></div>
     <div class="row">${btns}</div></div>`;
 }
 
-function render() {
-  if (document.activeElement && document.activeElement.matches('input')) return; // don't wipe typing
+function render(force = false) {
+  if (!force && document.activeElement && document.activeElement.matches('input')) return; // don't wipe typing
   const by = (s) => orders.filter((o) => o.status === s);
   const col = (title, list, asc) => `<div class="col"><h2>${title} (${list.length})</h2>${
     (asc ? list.sort((a, b) => (b.recook_reason ? 1 : 0) - (a.recook_reason ? 1 : 0) || new Date(a.cooking_started_at) - new Date(b.cooking_started_at))
@@ -128,6 +129,7 @@ app.addEventListener('click', async (e) => {
   else if (a === 'save') {
     r = await sb.rpc('kds_set_contact', { p_order: id, p_phone: cardEl.querySelector('[data-f=phone]').value, p_dietary: cardEl.querySelector('[data-f=diet]').value });
     const sug = r.data?.saved_dietary;
+    if (!r.error) { b.textContent = 'Saved'; await new Promise((res) => setTimeout(res, 600)); }
     if (!r.error && sug && !cardEl.querySelector('[data-f=diet]').value) alert('Saved dietary note for this customer: ' + sug);
   } else if (a === 'text') {
     const o = orders.find((x) => x.id === id);
@@ -137,8 +139,8 @@ app.addEventListener('click', async (e) => {
     const resp = await fetch(window.KDS_CONFIG.SUPABASE_URL + '/functions/v1/send-text', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: window.KDS_CONFIG.SUPABASE_ANON_KEY, Authorization: 'Bearer ' + s.session.access_token }, body: JSON.stringify({ orderId: id, message: msg }) });
     alert(resp.ok ? 'Message sent' : 'Text failed'); b.disabled = false; return;
   } else r = await sb.rpc('kds_set_status', { p_order: id, p_status: a });
-  if (r.error) alert(r.error.message);
-  document.activeElement?.blur(); await load();
+  if (r.error) alert('Could not save: ' + r.error.message);
+  document.activeElement?.blur(); await load(true);
 });
 boot();
 </script>
