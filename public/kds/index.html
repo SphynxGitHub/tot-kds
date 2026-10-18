@@ -34,6 +34,10 @@
   .card.age5 { --flash: rgba(255,214,10,.45); animation: flash 2s ease-in-out infinite; }
   .card.age7 { --flash: rgba(255,140,0,.5);  animation: flash 1.2s ease-in-out infinite; }
   .card.age10 { --flash: rgba(220,40,30,.55); animation: flash .6s ease-in-out infinite; }
+  .card.quiet5 { box-shadow: inset 0 0 0 3px rgba(255,214,10,.8); }
+  .card.quiet7 { box-shadow: inset 0 0 0 3px rgba(255,140,0,.85); }
+  .card.quiet10 { box-shadow: inset 0 0 0 3px rgba(220,40,30,.85); }
+  .card[class*="age"] { cursor: pointer; }
   @media (prefers-reduced-motion: reduce) { .card.age5, .card.age7, .card.age10 { animation: none; background: var(--flash); } }
   button.icon { flex:0 0 auto; min-width:44px; padding:8px; display:inline-flex; align-items:center; justify-content:center; }
   .phone { flex:1; font-size:16px; display:flex; align-items:center; gap:6px; } .phone.none { color:var(--mute); }
@@ -59,7 +63,8 @@ const PENCIL = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stro
 let view = 'active', orders = [], seen = null, err = '';
 // When the kitchen clock starts for an order: the order time, or for scheduled orders the release time.
 const releaseAt = (o) => o.scheduled_pickup_at ? new Date(new Date(o.scheduled_pickup_at) - LEAD_MIN * 60e3) : new Date(o.received_at);
-const clockStart = (o) => (o.recook_reason && o.cooking_started_at) ? new Date(o.cooking_started_at) : releaseAt(o);
+// The clock restarts whenever the order changes status (so it measures time in the current status).
+const clockStart = (o) => new Date(Math.max(releaseAt(o).getTime(), o.status_changed_at ? new Date(o.status_changed_at).getTime() : 0));
 const isHeld = (o) => o.status === 'new' && releaseAt(o) > new Date();
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 const fmt = (t) => t ? new Date(t).toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit', timeZone:TZ }) : '';
@@ -88,7 +93,7 @@ function loginScreen(msg = '') {
 async function load(force = false) {
   const start = new Date(today() + 'T00:00:00'); // local midnight; wide enough, filtered below by Eastern date
   const { data, error } = await sb.from('orders')
-    .select('id,first_name,last_name,phone,dietary_notes,status,received_at,scheduled_pickup_at,cooking_started_at,cooking_ended_at,picked_up_at,recook_reason,unit_number,order_items(line_no,item_name,variation_name,modifiers,quantity)')
+    .select('id,first_name,last_name,phone,dietary_notes,status,received_at,scheduled_pickup_at,status_changed_at,alert_acked_at,cooking_started_at,cooking_ended_at,picked_up_at,recook_reason,unit_number,order_items(line_no,item_name,variation_name,modifiers,quantity)')
     .or(`received_at.gte.${new Date(Date.now() - 36 * 3600e3).toISOString()},scheduled_pickup_at.gte.${new Date(Date.now() - 36 * 3600e3).toISOString()}`)
     .neq('status', 'cancelled').order('received_at', { ascending: false });
   if (error) { err = error.message; return render(true); }
@@ -126,13 +131,13 @@ function card(o) {
       : `<div class="diet-line"><div class="warn">Dietary: ${esc(o.dietary_notes)}</div>${showPhone ? '' : pencil}</div>`}`;
   const aging = o.status === 'new' || o.status === 'cooking';
   const sched = o.scheduled_pickup_at ? `<div class="warn" style="color:var(--ink)">Pickup ${fmt(o.scheduled_pickup_at)}</div>` : '';
-  return `<div class="card ${o.dietary_notes ? 'diet' : ''} ${o.recook_reason ? 'recook' : ''}" data-id="${o.id}" ${aging ? `data-since="${clockStart(o).getTime()}"` : ''}>
+  return `<div class="card ${o.dietary_notes ? 'diet' : ''} ${o.recook_reason ? 'recook' : ''}" data-id="${o.id}" ${aging ? `data-since="${clockStart(o).getTime()}" data-ack="${o.alert_acked_at ? new Date(o.alert_acked_at).getTime() : ''}"` : ''}>
     ${sched}
     <div class="name">${esc(o.first_name)} ${esc(o.last_name)}${o.unit_number ? ' · Unit ' + esc(o.unit_number) : ''}</div>
     ${contact}
     <ul>${items}</ul>
     ${o.recook_reason ? `<div class="recook-note">Re-cook: ${esc(o.recook_reason)}</div>` : ''}
-    <div class="times"><span>Ordered ${fmt(o.received_at)}</span>${aging ? '<span class="age"></span>' : ''}${o.cooking_started_at ? `<span>Cooking ${fmt(o.cooking_started_at)}</span>` : ''}${o.cooking_ended_at ? `<span>Done ${fmt(o.cooking_ended_at)}</span>` : ''}${o.picked_up_at ? `<span>Picked up ${fmt(o.picked_up_at)}</span>` : ''}</div>
+    <div class="times"><span>Ordered ${fmt(o.received_at)}</span>${aging ? '<span class="age"></span><span class="hint ackhint"></span>' : ''}${o.cooking_started_at ? `<span>Cooking ${fmt(o.cooking_started_at)}</span>` : ''}${o.cooking_ended_at ? `<span>Done ${fmt(o.cooking_ended_at)}</span>` : ''}${o.picked_up_at ? `<span>Picked up ${fmt(o.picked_up_at)}</span>` : ''}</div>
     <div class="row">${btns}</div></div>`;
 }
 
@@ -142,10 +147,15 @@ function tick() {
   document.querySelectorAll('.card[data-since]').forEach((c) => {
     const mins = Math.max(0, Math.floor((now - Number(c.dataset.since)) / 60000));
     const lvl = mins >= 10 ? 10 : mins >= 7 ? 7 : mins >= 5 ? 5 : 0;
-    c.classList.remove('age5', 'age7', 'age10');
-    if (lvl) c.classList.add('age' + lvl);
+    c.classList.remove('age5', 'age7', 'age10', 'quiet5', 'quiet7', 'quiet10');
+    // Flash once the order has waited 5 minutes, then again every 5 minutes after the last acknowledgement.
+    // Colour reflects total wait; between acknowledgements the card keeps a steady outline.
+    const ref = Math.max(Number(c.dataset.since), Number(c.dataset.ack) || 0);
+    if (lvl) c.classList.add(now - ref >= 5 * 60000 ? 'age' + lvl : 'quiet' + lvl);
     const a = c.querySelector('.age');
     if (a) { a.textContent = mins + ' min'; a.className = 'age' + (lvl ? ' a' + lvl : ''); }
+    const h = c.querySelector('.ackhint');
+    if (h) h.textContent = c.className.match(/\bage\d/) ? 'Tap card to acknowledge (flashes again in 5 min)' : '';
   });
   // A scheduled order that has just become due moves from Scheduled into New.
   if (orders.some((o) => o.status === 'new' && o.scheduled_pickup_at && !isHeld(o) && !document.querySelector(`.card[data-id="${o.id}"]`)) && view === 'active') load();
@@ -177,6 +187,16 @@ app.addEventListener('input', (e) => {
 });
 
 app.addEventListener('click', async (e) => {
+  // Tap anywhere on a flashing card (outside its buttons and fields) to acknowledge it.
+  const flashing = e.target.closest('.card[class*="age"]:not([class*="quiet"])');
+  if (flashing && !e.target.closest('button, input, a')) {
+    const lvl = ['age10', 'age7', 'age5'].map((c) => flashing.classList.contains(c) && Number(c.slice(3))).find(Boolean);
+    if (lvl) {
+      flashing.dataset.ack = String(Date.now()); tick();            // silence immediately on this screen
+      sb.rpc('kds_ack', { p_order: flashing.dataset.id }).then(({ error }) => { if (error) err = 'Could not acknowledge: ' + error.message; load(true); });
+    }
+    return;
+  }
   const v = e.target.closest('[data-v]');
   if (v) { if (v.dataset.v === 'out') { await sb.auth.signOut(); return location.reload(); } view = v.dataset.v; return render(); }
   const b = e.target.closest('[data-a]'); if (!b) return;
