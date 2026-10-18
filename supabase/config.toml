@@ -1,0 +1,6 @@
+# Edge function settings. Square and the scheduler can't send a Supabase login token; they are
+# authenticated by Square's signature and by CRON_SECRET inside the functions.
+[functions.square-webhook]
+verify_jwt = false
+[functions.run-jobs]
+verify_jwt = false
