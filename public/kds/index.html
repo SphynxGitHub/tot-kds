@@ -63,7 +63,8 @@ const PENCIL = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stro
 let view = 'active', orders = [], seen = null, err = '';
 // When the kitchen clock starts for an order: the order time, or for scheduled orders the release time.
 const releaseAt = (o) => o.scheduled_pickup_at ? new Date(new Date(o.scheduled_pickup_at) - LEAD_MIN * 60e3) : new Date(o.received_at);
-// The clock restarts whenever the order changes status (so it measures time in the current status).
+// clockStart = when the current status began. It restarts the flash timer only; the minute counter shown on the
+// card keeps counting from when the order came in (releaseAt).
 const clockStart = (o) => new Date(Math.max(releaseAt(o).getTime(), o.status_changed_at ? new Date(o.status_changed_at).getTime() : 0));
 const isHeld = (o) => o.status === 'new' && releaseAt(o) > new Date();
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -131,7 +132,7 @@ function card(o) {
       : `<div class="diet-line"><div class="warn">Dietary: ${esc(o.dietary_notes)}</div>${showPhone ? '' : pencil}</div>`}`;
   const aging = o.status === 'new' || o.status === 'cooking';
   const sched = o.scheduled_pickup_at ? `<div class="warn" style="color:var(--ink)">Pickup ${fmt(o.scheduled_pickup_at)}</div>` : '';
-  return `<div class="card ${o.dietary_notes ? 'diet' : ''} ${o.recook_reason ? 'recook' : ''}" data-id="${o.id}" ${aging ? `data-since="${clockStart(o).getTime()}" data-ack="${o.alert_acked_at ? new Date(o.alert_acked_at).getTime() : ''}"` : ''}>
+  return `<div class="card ${o.dietary_notes ? 'diet' : ''} ${o.recook_reason ? 'recook' : ''}" data-id="${o.id}" ${aging ? `data-since="${releaseAt(o).getTime()}" data-stage="${clockStart(o).getTime()}" data-ack="${o.alert_acked_at ? new Date(o.alert_acked_at).getTime() : ''}"` : ''}>
     ${sched}
     <div class="name">${esc(o.first_name)} ${esc(o.last_name)}${o.unit_number ? ' · Unit ' + esc(o.unit_number) : ''}</div>
     ${contact}
@@ -150,7 +151,7 @@ function tick() {
     c.classList.remove('age5', 'age7', 'age10', 'quiet5', 'quiet7', 'quiet10');
     // Flash once the order has waited 5 minutes, then again every 5 minutes after the last acknowledgement.
     // Colour reflects total wait; between acknowledgements the card keeps a steady outline.
-    const ref = Math.max(Number(c.dataset.since), Number(c.dataset.ack) || 0);
+    const ref = Math.max(Number(c.dataset.stage), Number(c.dataset.ack) || 0);   // flash timer: restarts on status change or tap
     if (lvl) c.classList.add(now - ref >= 5 * 60000 ? 'age' + lvl : 'quiet' + lvl);
     const a = c.querySelector('.age');
     if (a) { a.textContent = mins + ' min'; a.className = 'age' + (lvl ? ' a' + lvl : ''); }
@@ -168,7 +169,7 @@ function render(force = false) {
   const held = orders.filter(isHeld).sort((a, b) => new Date(a.scheduled_pickup_at) - new Date(b.scheduled_pickup_at));
   const col = (title, list, asc) => `<div class="col"><h2>${title} (${list.length})</h2>${
     (asc ? list.sort((a, b) => (b.recook_reason ? 1 : 0) - (a.recook_reason ? 1 : 0) || new Date(a.cooking_started_at) - new Date(b.cooking_started_at))
-         : list.sort((a, b) => clockStart(a) - clockStart(b))).map(card).join('') || '<div class="empty">None</div>'}</div>`;
+         : list.sort((a, b) => releaseAt(a) - releaseAt(b))).map(card).join('') || '<div class="empty">None</div>'}</div>`;
   app.innerHTML = `<header><h1>Kitchen Display</h1>
     <button class="tab" aria-pressed="${view === 'active'}" data-v="active">Active</button>
     <button class="tab" aria-pressed="${view === 'scheduled'}" data-v="scheduled">Scheduled (${held.length})</button>
